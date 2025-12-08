@@ -1,3 +1,27 @@
+# folders to ignore
+
+# MF-TPRF
+MF-TPRF/EA/data/
+MF-TPRF/EA/results/
+
+# LaTeX
+LaTeX/.vscode/
+LaTeX/chapter/
+LaTeX/figures/
+LaTeX/tables/
+LaTeX/frontmatter/
+LaTeX/output/*
+!LaTeX/output/Nowcasting_EA_DMFM.pdf
+!LaTeX/output/Davide_Delfino_DMFM.pdf
+LaTeX/preamble/
+LaTeX/slides/
+LaTeX/references.bib
+LaTeX/main.tex
+LaTeX/slides.tex
+LaTeX/output/main.pdf
+LaTeX/output/slides.pdf
+
+
 # History files
 .Rhistory
 .Rapp.history
