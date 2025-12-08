@@ -6,35 +6,21 @@
 MF-TPRF/EA/data/
 MF-TPRF/EA/results/
 
+# =========================
+# LaTeX: tieni SOLO main.pdf
+# =========================
 
-# =====================================
-# LaTeX: ignora SOLO file temporanei
-# =====================================
+# Ignora tutto sotto LaTeX/
+LaTeX/*
 
-# Config editor (se non vuoi versionarla)
-LaTeX/.vscode/
+# ...ma NON ignorare la cartella output
+!LaTeX/output/
 
-# Output compilazione: ignora tutto tranne i PDF finali che ti interessano
+# Dentro output ignora tutto...
 LaTeX/output/*
-!LaTeX/output/main.pdf
-!LaTeX/output/slides.pdf
 
-# File temporanei LaTeX (in TUTTA la cartella LaTeX)
-LaTeX/*.aux
-LaTeX/*.bbl
-LaTeX/*.bcf
-LaTeX/*.blg
-LaTeX/*.fdb_latexmk
-LaTeX/*.fls
-LaTeX/*.idx
-LaTeX/*.ilg
-LaTeX/*.ind
-LaTeX/*.log
-LaTeX/*.out
-LaTeX/*.run.xml
-LaTeX/*.synctex.gz
-LaTeX/*.toc
-LaTeX/*-SAVE-ERROR
+# ...tranne il PDF finale
+!LaTeX/output/main.pdf
 
 
 # =====================================
