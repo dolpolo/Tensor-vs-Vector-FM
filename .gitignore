@@ -1,26 +1,45 @@
-# folders to ignore
+# =====================================
+# R Script: ignora Dati e Risultati
+# =====================================
 
 # MF-TPRF
 MF-TPRF/EA/data/
 MF-TPRF/EA/results/
 
-# LaTeX
-LaTeX/.vscode/
-LaTeX/chapter/
-LaTeX/figures/
-LaTeX/tables/
-LaTeX/frontmatter/
-LaTeX/output/*
-!LaTeX/output/Nowcasting_EA_DMFM.pdf
-!LaTeX/output/Davide_Delfino_DMFM.pdf
-LaTeX/preamble/
-LaTeX/slides/
-LaTeX/references.bib
-LaTeX/main.tex
-LaTeX/slides.tex
-LaTeX/output/main.pdf
-LaTeX/output/slides.pdf
 
+# =====================================
+# LaTeX: ignora SOLO file temporanei
+# =====================================
+
+# Config editor (se non vuoi versionarla)
+LaTeX/.vscode/
+
+# Output compilazione: ignora tutto tranne i PDF finali che ti interessano
+LaTeX/output/*
+!LaTeX/output/main.pdf
+!LaTeX/output/slides.pdf
+
+# File temporanei LaTeX (in TUTTA la cartella LaTeX)
+LaTeX/*.aux
+LaTeX/*.bbl
+LaTeX/*.bcf
+LaTeX/*.blg
+LaTeX/*.fdb_latexmk
+LaTeX/*.fls
+LaTeX/*.idx
+LaTeX/*.ilg
+LaTeX/*.ind
+LaTeX/*.log
+LaTeX/*.out
+LaTeX/*.run.xml
+LaTeX/*.synctex.gz
+LaTeX/*.toc
+LaTeX/*-SAVE-ERROR
+
+
+# =====================================
+# R Code: ignora SOLO file temporanei
+# =====================================
 
 # History files
 .Rhistory
