@@ -7,6 +7,13 @@ MF-TPRF/EA/data/
 MF-TPRF/EA/results/
 
 # =========================
+# old: ignore old files
+# =========================
+
+# Ignora tutto sotto LaTeX/
+old/*
+
+# =========================
 # LaTeX: tieni SOLO main.pdf
 # =========================
 
