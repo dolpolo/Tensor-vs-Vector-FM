@@ -237,6 +237,7 @@ init_XP_ER <- function(X_std, Kmax = 15) {
 # r      : number of factors
 # ==============================================================================
 
+
 EM_algorithm <- function(X_init, X_obs, A_list, r,
                          max_iter = 1000, tol = 1e-4) {
   
@@ -253,9 +254,33 @@ EM_algorithm <- function(X_init, X_obs, A_list, r,
     # --- E-step: reconstruct X given (F_hat, Phi_hat) ---
     X_new <- E_step(X_old, X_obs, F_hat, Phi_hat, A_list)
     
-    # --- Convergence check ---
-    diff_max      <- max(abs(X_new - X_old))
-    diffs[iter]   <- diff_max
+    # --- Convergence check (max change in X) ---
+    diff_max    <- max(abs(X_new - X_old))
+    diffs[iter] <- diff_max
+    
+    # Calcola anche la violazione dei vincoli A_i X = x_obs (diagnostica)
+    viol_A <- 0
+    
+    for (i in seq_len(ncol(X_new))) {
+      A_i <- A_list[[i]]
+      if (nrow(A_i) == 0) next
+      
+      idx_obs_i <- which(!is.na(X_obs[, i]))
+      x_obs_i   <- X_obs[idx_obs_i, i]
+      
+      # predizione aggregata dal pannello X_new
+      x_hat_i <- A_i %*% X_new[, i, drop = FALSE]
+      
+      if (length(x_obs_i) != nrow(A_i)) {
+        warning("EM: mismatch tra length(x_obs_i) e nrow(A_i) per serie ", i)
+      } else {
+        viol_A <- viol_A + sum((x_obs_i - x_hat_i)^2, na.rm = TRUE)
+      }
+    }
+    
+    cat("Iter ", iter, 
+        ": diff_max = ", signif(diff_max, 3),
+        "  viol_A = ", signif(viol_A, 3), "\n")
     
     if (diff_max < tol) {
       message("Converged at iteration ", iter,

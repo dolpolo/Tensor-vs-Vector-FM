@@ -1,3 +1,80 @@
+# ==============================================================================
+# UTILITY TO ADD AN F-TEST IN THE FIRST STEP OF THEMF-3PRF: 
+#===============================================================================
+
+step1_select_Phi <- function(X_lf, Z,
+                             alpha_level = 0.10,
+                             robust_type = c("White", "NW"),
+                             nw_lag = 1) {
+  robust_type <- match.arg(robust_type)
+  
+  X_lf   <- as.matrix(X_lf)
+  Z      <- as.data.frame(Z)   # preserva i nomi di colonna
+  T_q    <- nrow(X_lf)
+  N      <- ncol(X_lf)
+  Lproxy <- ncol(Z)
+  
+  # Qui ci aspettiamo che Z abbia già i nomi: "y_q", "e1", "e2", ...
+  if (is.null(colnames(Z))) {
+    stop("Z deve avere nomi di colonna (ad es. 'y_q', 'e1', ...).")
+  }
+  
+  Phi_hat_sel <- matrix(NA_real_, nrow = N, ncol = Lproxy)
+  colnames(Phi_hat_sel) <- colnames(Z)  # stessi nomi delle proxy
+  
+  for (i in 1:N) {
+    df_i <- data.frame(x = X_lf[, i], Z)  # x ~ y_q + e1 + e2 + ...
+    mod_i <- lm(x ~ ., data = df_i)       # intercetta + tutte le proxy
+    
+    # matrice di covarianza robusta (White o Newey-West)
+    if (robust_type == "White") {
+      Vcov_i <- vcovHC(mod_i, type = "HC1")
+    } else { # "NW"
+      Vcov_i <- NeweyWest(mod_i, lag = nw_lag,
+                          prewhite = FALSE, adjust = TRUE)
+    }
+    
+    # slope (escludo l'intercetta)
+    alpha_hat_i <- coef(mod_i)[-1]
+    
+    if (Lproxy == 1) {
+      # ---- caso 1 proxy: t-test robusto ----
+      test_i <- coeftest(mod_i, vcov. = Vcov_i)
+      # la seconda riga è il coefficiente del primo proxy
+      p_val  <- test_i[2, "Pr(>|t|)"]
+      
+      if (is.na(p_val) || p_val > alpha_level) {
+        alpha_hat_i[] <- 0
+      }
+      
+    } else {
+      # ---- caso Lproxy > 1: F/Wald congiunto su TUTTE le proxy ----
+      # es: c("y_q = 0", "e1 = 0", "e2 = 0", ...)
+      hyp <- paste0(colnames(Z), " = 0")
+      
+      Ftest_i <- linearHypothesis(mod_i, hyp,
+                                  vcov. = Vcov_i,
+                                  test  = "F")
+      p_val_F <- Ftest_i[2, "Pr(>F)"]
+      
+      if (is.na(p_val_F) || p_val_F > alpha_level) {
+        # non significativo congiuntamente -> azzero tutta la serie
+        alpha_hat_i[] <- 0
+      }
+      # (se un domani vuoi fare sparsity fine, qui guardi anche i singoli t-test)
+    }
+    
+    Phi_hat_sel[i, ] <- alpha_hat_i
+  }
+  
+  return(Phi_hat_sel)
+}
+
+
+
+# ==============================================================================
+# NUMBER OF PROXIES IN THE MF-3PRF: 
+#===============================================================================
 
 # Input: 
 #   X_lf   : matrice T x N dei predittori (dopo EM, eventualmente standardizzata)
@@ -75,82 +152,142 @@ build_autoproxy_3prf <- function(X_lf, y_q, Lproxy) {
 # ==============================================================================
 # LAG U-MIDAS MF-3PRF: 
 #===============================================================================
+# Fixing p_AR as a parameter
+# considering the restriction after the Wald Test
 
-choose_UMIDAS_lag <- function(X_lf, X_hf, y_q, Lmax = 3, Lproxy = Lproxy) {
+choose_UMIDAS_lag <- function(X_lf, X_hf, y_q,
+                              Lmax         = 5,
+                              Lproxy       = 1, 
+                              p_AR         = 1,      # ordine AR(y) scelto FUORI
+                              Robust_F     = FALSE,
+                              alpha        = 0.10,
+                              robust_type  = c("White", "NW"),
+                              nw_lag       = 1){
   
-  X_lf <- as.matrix(X_lf)   # T_q x N (low frequency, dopo EM)
-  X_hf <- as.matrix(X_hf)   # T_m x N (high frequency, mensile)
-  y_q  <- as.numeric(y_q)   # T_q
+  robust_type <- match.arg(robust_type)
   
-  T_q <- length(y_q)
+  # --------------------------------------------------------
+  # Preliminari
+  # --------------------------------------------------------
+  X_lf <- as.matrix(X_lf)   # trimestrali (T_q x N) - dopo EM + aggregazione
+  X_hf <- as.matrix(X_hf)   # mensili (T_m x N)
+  y_q  <- as.numeric(y_q)   # target trimestrale (T_q)
+  T_q  <- length(y_q)
+  T_m  <- nrow(X_hf)
   
-  # -------------------------
-  # STEP 0: Build L-autoproxy (con intercette già gestite dentro)
-  # -------------------------
+  if (Lmax < 1) stop("Lmax deve essere >= 1")
+  if (Lmax >= T_q) stop("Lmax non può essere >= T_q")
+  if (p_AR < 0) stop("p_AR deve essere >= 0")
+  
+  # --------------------------------------------------------
+  # STEP 0 – Costruzione L-autoproxy (usa intercetta internamente)
+  # --------------------------------------------------------
   Z <- build_autoproxy_3prf(X_lf, y_q, Lproxy)   # T_q x Lproxy
   
-  # -------------------------
-  # STEP 1: First pass
-  # xi,τ = α0_i + Z_τ α_i   (regressione con intercetta)
-  # -------------------------
-  # Z_tilde = [1, Z]  (T_q x (Lproxy + 1))
-  Z_tilde <- cbind(1, Z)
+  # --------------------------------------------------------
+  # STEP 1 – First Pass con intercetta
+  #
+  #  x_{i,τ} = α0_i + Z_τ α_i + u_{i,τ}
+  # --------------------------------------------------------
+  Z_tilde <- cbind(1, Z)                          # T_q x (1+Lproxy)
+  XtX_1   <- t(Z_tilde) %*% Z_tilde               # (1+Lproxy) x (1+Lproxy)
+  XtY_1   <- t(Z_tilde) %*% X_lf                  # (1+Lproxy) x N
   
-  # OLS: B_full = (Z_tilde' Z_tilde)^(-1) Z_tilde' X_lf, dimensione N x (Lproxy+1)
-  A <- t(Z_tilde) %*% Z_tilde
-  B <- t(Z_tilde) %*% X_lf
-  B_full <- t(qr.solve(A, B))       # N x (Lproxy + 1)
+  Beta_full <- solve(XtX_1, XtY_1)                # (1+Lproxy) x N
+  Beta_full <- t(Beta_full)                       # N x (1+Lproxy)
   
-  # Phi_hat: prendo SOLO le slope rispetto alle proxy (scarto l'intercetta)
-  Phi_hat <- B_full[, -1, drop = FALSE]   # N x Lproxy
+  Phi_hat_full <- Beta_full[, -1, drop = FALSE]   # N x Lproxy (solo slope)
   
-  # -------------------------
-  # STEP 2: Second pass: factor extraction
-  # Ft = X_hf * Phi_hat * (Phi_hat' Phi_hat)^(-1)
-  # -------------------------
-  Phi_cross <- t(Phi_hat) %*% Phi_hat              # Lproxy x Lproxy
+  # --------------------------------------------------------
+  # STEP 1bis – First Pass con Robust F-test (opzionale)
+  # --------------------------------------------------------
+  if (Robust_F == FALSE) {
+    Phi_hat <- Phi_hat_full
+  } else {
+    Phi_hat <- step1_select_Phi(X_lf        = X_lf,
+                                Z           = Z,
+                                alpha_level = alpha,
+                                robust_type = robust_type,
+                                nw_lag      = nw_lag)
+  }
   
-  Ft <- X_hf %*% Phi_hat %*% qr.solve(Phi_cross)   # T_m x Lproxy
+  # --------------------------------------------------------
+  # STEP 2 – Second Pass: fattori mensili
+  #
+  #  F_t = X_hf Φ_hat (Φ_hat' Φ_hat)^(-1)
+  # --------------------------------------------------------
+  XtX_2   <- t(Phi_hat) %*% Phi_hat          # Lproxy x Lproxy
+  XtY_2   <- t(Phi_hat) %*% t(X_hf)          # Lproxy x T_m
   
-  # -------------------------
-  # STEP 3: split monthly -> quarterly (3 mesi per trimestre)
-  # Assumiamo T_m = 3 * T_q
-  # -------------------------
-  F1 <- Ft[seq(1, 3 * T_q, by = 3), , drop = FALSE]  # mese 1 del trimestre
-  F2 <- Ft[seq(2, 3 * T_q, by = 3), , drop = FALSE]  # mese 2
-  F3 <- Ft[seq(3, 3 * T_q, by = 3), , drop = FALSE]  # mese 3
+  # Uso qr.solve per sicurezza (Phi'Phi potrebbe essere quasi singolare)
+  M_2     <- qr.solve(XtX_2, XtY_2)          # Lproxy x T_m
+  F_hat   <- t(M_2)                          # T_m x Lproxy
   
-  # -------------------------
-  # LOOP over L (lag MF-UMIDAS)
-  # -------------------------
+  # --------------------------------------------------------
+  # STEP 3.1 – Fattori trimestrali per trimestri COMPLETI
+  # --------------------------------------------------------
+  if (T_m < 3 * T_q) {
+    stop("Ci sono meno mesi di quelli necessari per coprire tutti i trimestri di y_q.")
+  }
+  
+  F1 <- F_hat[seq(1, 3 * T_q, by = 3), , drop = FALSE]  # mese 1
+  F2 <- F_hat[seq(2, 3 * T_q, by = 3), , drop = FALSE]  # mese 2
+  F3 <- F_hat[seq(3, 3 * T_q, by = 3), , drop = FALSE]  # mese 3
+  
+  # --------------------------------------------------------
+  # LOOP over L (lag MF-UMIDAS) con AR(p_AR) su y
+  # --------------------------------------------------------
   results <- data.frame(L = integer(),
                         AIC = numeric(),
                         BIC = numeric())
   
   for (L in 1:Lmax) {
     
-    Xreg <- NULL
-    T_eff <- T_q - L      # numero effettivo di osservazioni utilizzabili
+    # punto di partenza in termini di trimestre:
+    # serve avere disponibili sia i L lag dei fattori sia i p_AR lag di y
+    start_tau <- max(L, p_AR) + 1
+    T_eff     <- T_q - max(L, p_AR)   # numero osservazioni effettive
     
-    # Per ogni lag 0,...,L-1 costruisco i regressori
-    # target: y_dep = y_q[(L+1):T_q], lunghezza T_q - L = T_eff
-    # per ogni ell, uso F(τ - ell) con τ = L+1,...,T_q
-    for (ell in 1:L) {
-      # ell0 = ell - 1 è il lag "vero"
-      # indici corretti: (L+1-ell0):(T_q-ell0) con ell0 = ell-1
-      idx <- (L + 2 - ell):(T_q + 1 - ell)   # lunghezza T_eff
-      
-      Xreg <- cbind(
-        Xreg,
-        F1[idx, , drop = FALSE],
-        F2[idx, , drop = FALSE],
-        F3[idx, , drop = FALSE]
-      )
+    # variabile dipendente: y_tau per tau = start_tau,...,T_q
+    y_dep <- y_q[start_tau:T_q]
+    
+    # ---- blocco AR in y: lag trimestrali di y ----
+    Y_lag <- NULL
+    if (p_AR > 0) {
+      for (j in 1:p_AR) {
+        Y_lag <- cbind(
+          Y_lag,
+          y_q[(start_tau - j):(T_q - j)]
+        )
+      }
+      colnames(Y_lag) <- paste0("y_lag", 1:p_AR)
     }
     
-    y_dep <- y_q[(L + 1):T_q]    # T_eff osservazioni
+    # ---- blocco fattori U-MIDAS: lag di F1,F2,F3 ----
+    Xreg_F <- NULL
+    if (L > 0) {
+      for (ell in 0:(L-1)) {
+        idx <- (start_tau - ell):(T_q - ell)   # lunghezza T_eff
+        
+        Xreg_F <- cbind(
+          Xreg_F,
+          F1[idx, , drop = FALSE],
+          F2[idx, , drop = FALSE],
+          F3[idx, , drop = FALSE]
+        )
+      }
+    }
     
-    # Regressione U-MIDAS con intercetta (di default in lm)
+    # Combino AR + fattori
+    if (p_AR > 0 && !is.null(Xreg_F)) {
+      Xreg <- cbind(Y_lag, Xreg_F)
+    } else if (p_AR > 0 && is.null(Xreg_F)) {   # solo AR
+      Xreg <- Y_lag
+    } else {
+      Xreg <- Xreg_F                            # solo fattori
+    }
+    
+    # Regressione U-MIDAS con intercetta
     fit <- lm(y_dep ~ Xreg)
     
     results <- rbind(
@@ -171,6 +308,8 @@ choose_UMIDAS_lag <- function(X_lf, X_hf, y_q, Lmax = 3, Lproxy = Lproxy) {
 }
 
 
+
+
 # ==============================================================================
 # MF-3PRF: 
 #===============================================================================
@@ -181,11 +320,22 @@ choose_UMIDAS_lag <- function(X_lf, X_hf, y_q, Lmax = 3, Lproxy = Lproxy) {
 #' add the high friquency predictors
 # ==============================================================================
 
+
 # X_hf <- X_em   
 # X_lf <- X_em_agg 
+# Robust_F   = TRUE
+# alpha      = 0.05
+# robust_type = "NW"
+# nw_lag      = 1
 
-MF_TPRF <- function(X_lf, X_hf, y_q, Lproxy = 1, L_midas = 1) {
-  
+MF_TPRF <- function(X_lf, X_hf, y_q,
+                    Lproxy = 1,
+                    L_midas = 1,
+                    p_AR   = 1,          # nuovo: ordine AR scelto FUORI
+                    Robust_F   = FALSE,
+                    alpha      = 0.10,
+                    robust_type = c("White", "NW"),
+                    nw_lag      = 1) {
   # --------------------------------------------------------
   # Preliminari
   # --------------------------------------------------------
@@ -214,15 +364,28 @@ MF_TPRF <- function(X_lf, X_hf, y_q, Lproxy = 1, L_midas = 1) {
   #  Beta_full ha dimensione (1+Lproxy) x N
   #  Prendiamo solo le slope α_i (righe 2..)
   # --------------------------------------------------------
-  Z_tilde <- cbind(1, Z)                     # T_q x (1+Lproxy)
-  XtX_1   <- t(Z_tilde) %*% Z_tilde          # (1+Lproxy) x (1+Lproxy)
-  XtY_1   <- t(Z_tilde) %*% X_lf             # (1+Lproxy) x N
+  Z_tilde <- cbind(1, Z)                          # T_q x (1+Lproxy)
+  XtX_1   <- t(Z_tilde) %*% Z_tilde               # (1+Lproxy) x (1+Lproxy)
+  XtY_1   <- t(Z_tilde) %*% X_lf                  # (1+Lproxy) x N
   
-  Beta_full <- solve(XtX_1, XtY_1)           # (1+Lproxy) x N
-  Beta_full <- t(Beta_full)                  # N x (1+Lproxy)
+  Beta_full <- solve(XtX_1, XtY_1)                # (1+Lproxy) x N
+  Beta_full <- t(Beta_full)                       # N x (1+Lproxy)
   
-  Phi_hat <- Beta_full[, -1, drop = FALSE]   # N x Lproxy  (solo slope α_i)
+  Phi_hat_full <- Beta_full[, -1, drop = FALSE]   # N x Lproxy (solo slope)
   
+  # --------------------------------------------------------
+  # STEP 1bis – First Pass con intercetta considering a Robust F-test
+  # --------------------------------------------------------
+  
+  if (Robust_F == FALSE) {
+    Phi_hat <- Phi_hat_full
+  } else {
+    Phi_hat <- step1_select_Phi(X_lf        = X_lf,
+                                Z           = Z,
+                                alpha_level = alpha,
+                                robust_type = robust_type,
+                                nw_lag      = nw_lag)
+  }
   # --------------------------------------------------------
   # STEP 2 – Second Pass: fattori mensili
   #
@@ -257,47 +420,78 @@ MF_TPRF <- function(X_lf, X_hf, y_q, Lproxy = 1, L_midas = 1) {
   F_next3 <- if (rem >= 3) F_hat[3 * T_q + 3, , drop = FALSE] else NULL
   
   # --------------------------------------------------------
-  # STEP 3.2 – U-MIDAS trimestrale con L_midas trimestri (corrente + lag)
+  # STEP 3.2 – U-MIDAS trimestrale con AR(p_AR) in y
   #
   # Modello:
-  #  y_τ = β0 + sum_{ℓ=0}^{L_midas-1} [ β_{ℓ,1}' F1_{τ-ℓ} 
-  #                                     + β_{ℓ,2}' F2_{τ-ℓ}
-  #                                     + β_{ℓ,3}' F3_{τ-ℓ} ] + η_τ
+  #  y_τ = β0
+  #        + sum_{j=1}^{p_AR} ρ_j y_{τ-j}
+  #        + sum_{ℓ=0}^{L_midas-1} [ β_{ℓ,1}' F1_{τ-ℓ} 
+  #                                  + β_{ℓ,2}' F2_{τ-ℓ}
+  #                                  + β_{ℓ,3}' F3_{τ-ℓ} ] + η_τ
   #
-  # Stima su trimestri COMPLETI: τ = L_midas .. T_q
+  # Stima su trimestri COMPLETI:
+  #  τ = start_tau, ..., T_q
+  #  con start_tau = max(L_midas, p_AR) + 1
   # --------------------------------------------------------
-  rows_list <- list()
-  row_id    <- 1
   
-  for (tau in L_midas:T_q) {
-    row_vec <- c()
-    for (ell_id in 1:L_midas) {
-      ell   <- ell_id - 1       # ell = 0,1,...,L_midas-1
-      lag_q <- tau - ell
-      # ogni blocco: [F1_{lag_q}, F2_{lag_q}, F3_{lag_q}]
-      row_vec <- c(
-        row_vec,
-        F1[lag_q, ],
-        F2[lag_q, ],
-        F3[lag_q, ]
+  if (p_AR < 0) stop("p_AR deve essere >= 0")
+  
+  start_tau <- max(L_midas, p_AR) + 1
+  T_eff     <- T_q - max(L_midas, p_AR)
+  
+  # variabile dipendente: y_τ per τ = start_tau,...,T_q
+  y_dep <- y_q[start_tau:T_q]   # lunghezza T_eff
+  
+  # ---- blocco AR in y ----
+  Y_lag <- NULL
+  if (p_AR > 0) {
+    for (j in 1:p_AR) {
+      Y_lag <- cbind(
+        Y_lag,
+        y_q[(start_tau - j):(T_q - j)]
       )
     }
-    rows_list[[row_id]] <- row_vec
-    row_id <- row_id + 1
+    colnames(Y_lag) <- paste0("y_lag", 1:p_AR)
   }
   
-  Xreg <- do.call(rbind, rows_list)          # (T_q - L_midas + 1) x (3*K*L_midas)
-  y_dep <- y_q[L_midas:T_q]                  # vettore dipendente
- 
-  # OLS con intercetta: y = β0 + Xreg β + errore
-  X_tilde_3 <- cbind(1, Xreg)                # aggiungo colonna di 1
-  XtX_3     <- t(X_tilde_3) %*% X_tilde_3    # (1+3*K*L_midas) x (1+3*K*L_midas)
-  XtY_3     <- t(X_tilde_3) %*% y_dep        # (1+3*K*L_midas) x 1
+  # ---- blocco fattori U-MIDAS (F1, F2, F3 con lag 0..L_midas-1) ----
+  Xreg_F <- NULL
+  for (ell_id in 1:L_midas) {
+    ell   <- ell_id - 1                 # ell = 0,...,L_midas-1
+    idx   <- (start_tau - ell):(T_q - ell)   # lunghezza T_eff
+    
+    Xreg_F <- cbind(
+      Xreg_F,
+      F1[idx, , drop = FALSE],
+      F2[idx, , drop = FALSE],
+      F3[idx, , drop = FALSE]
+    )
+  }
   
-  beta_hat  <- solve(XtX_3, XtY_3)           # (1+3*K*L_midas) x 1
+  # Combino AR + fattori
+  if (p_AR > 0) {
+    Xreg <- cbind(Y_lag, Xreg_F)
+  } else {
+    Xreg <- Xreg_F
+  }
+  
+  # OLS con intercetta: y = β0 + Y_lag ρ + Xreg_F β + errore
+  X_tilde_3 <- cbind(1, Xreg)
+  XtX_3     <- t(X_tilde_3) %*% X_tilde_3
+  XtY_3     <- t(X_tilde_3) %*% y_dep
+  
+  beta_hat  <- solve(XtX_3, XtY_3)
   
   beta0     <- as.numeric(beta_hat[1])
-  beta_vec  <- as.numeric(beta_hat[-1])
+  
+  # primi p_AR coefficienti dopo l'intercetta = AR in y
+  if (p_AR > 0) {
+    rho_hat  <- as.numeric(beta_hat[2:(1 + p_AR)])   # ρ_1,...,ρ_{p_AR}
+    beta_vec <- as.numeric(beta_hat[(2 + p_AR):length(beta_hat)])
+  } else {
+    rho_hat  <- numeric(0)
+    beta_vec <- as.numeric(beta_hat[-1])
+  }
   
   # beta_mat: righe = ℓ_id = 1..L_midas (ell = 0..L_midas-1)
   # colonne per ogni lag: [β_{ℓ,1} (K), β_{ℓ,2} (K), β_{ℓ,3} (K)]
@@ -307,60 +501,83 @@ MF_TPRF <- function(X_lf, X_hf, y_q, Lproxy = 1, L_midas = 1) {
                      byrow = TRUE)
   
   # --------------------------------------------------------
-  # STEP 4 – Nowcasting mensile
+  # STEP 4 – Nowcasting mensile con AR(p_AR) in y
   #
   # y_nowcast: lunghezza T_m (un nowcast per ogni mese disponibile).
   #
-  # Per ciascun trimestre τ = L_midas..T_q (storici):
-  #   al mese m=1: usa solo F1_τ come "corrente" (ell=0), + lag
-  #   al mese m=2: F1_τ + F2_τ
-  #   al mese m=3: F1_τ + F2_τ + F3_τ
+  # Per ciascun trimestre τ (storici) in cui il modello è definito:
+  #   τ = start_tau, ..., T_q
+  #   con start_tau = max(L_midas, p_AR) + 1
+  #
+  # Ad ogni trimestre τ:
+  #   - parte AR:    AR_part(τ) = sum_{j=1}^{p_AR} ρ_j * y_{τ-j}
+  #   - parte fattori: come nel codice originale (con ragged edge interno)
+  #   - nowcast mensile m = 1,2,3: β0 + AR_part(τ) + contrib_fattori(τ,m)
   #
   # Per il trimestre T_q+1 (se rem>=1):
-  #   usa F_next1/F_next2/F_next3 allo stesso modo.
+  #   - parte AR:    usa y_{T_q}, y_{T_q-1}, ..., y_{T_q+1-p_AR}
+  #   - parte fattori: F_next1/F_next2/F_next3 + lag storici
   # --------------------------------------------------------
   
   y_nowcast <- rep(NA_real_, T_m)
   
-  # 4.a) Trimestri COMPLETI 1..T_q (backtest pseudo real time)
-  for (tau in L_midas:T_q) {
-    
-    month_idx <- ((tau - 1) * 3 + 1):(tau * 3)  # posizioni dei 3 mesi di τ
-    
-    for (m in 1:3) {   # m = 1,2,3 (mese nel trimestre τ)
+  # punto di partenza coerente con la stima di STEP 3.2
+  start_tau <- max(L_midas, p_AR) + 1
+  
+  # 4.a) Trimestri COMPLETI (backtest pseudo real time)
+  if (start_tau <= T_q) {
+    for (tau in start_tau:T_q) {
       
-      contrib <- 0
+      # mesi del trimestre τ
+      month_idx <- ((tau - 1) * 3 + 1):(tau * 3)
       
-      # somma sui lag ℓ_id=1..L_midas
-      for (ell_id in 1:L_midas) {
-        ell   <- ell_id - 1
-        lag_q <- tau - ell
-        if (lag_q < 1) next
-        
-        # per ogni mese mm=1,2,3
-        for (mm in 1:3) {
-          
-          # Ragged edge "interno" al trimestre:
-          # - per ell=0 (trimestre τ stesso), includo solo i mesi mm <= m
-          # - per i lag (ell>=1), includo sempre mm=1,2,3
-          if (ell_id == 1 && mm > m) next
-          
-          F_qm <- switch(
-            mm,
-            `1` = F1[lag_q, ],
-            `2` = F2[lag_q, ],
-            `3` = F3[lag_q, ]
-          )
-          
-          start_col <- (mm - 1) * K + 1
-          end_col   <- mm * K
-          beta_block <- beta_mat[ell_id, start_col:end_col]
-          
-          contrib <- contrib + sum(F_qm * beta_block)
-        }
+      # -------- parte AR in y per il trimestre τ --------
+      if (p_AR > 0) {
+        # y_{τ-1}, ..., y_{τ-p_AR}
+        y_lags_tau <- sapply(1:p_AR, function(j) y_q[tau - j])
+        AR_part_tau <- sum(rho_hat * y_lags_tau)
+      } else {
+        AR_part_tau <- 0
       }
       
-      y_nowcast[month_idx[m]] <- beta0 + contrib
+      # -------- parte fattoriale mese per mese --------
+      for (m in 1:3) {   # m = 1,2,3 (mese nel trimestre τ)
+        
+        contrib <- 0
+        
+        # somma sui lag ℓ_id = 1..L_midas
+        for (ell_id in 1:L_midas) {
+          ell   <- ell_id - 1
+          lag_q <- tau - ell
+          if (lag_q < 1) next
+          
+          # per ogni mese mm = 1,2,3
+          for (mm in 1:3) {
+            
+            # Ragged edge "interno" al trimestre:
+            # - per ell=0 (trimestre τ stesso), includo solo i mesi mm <= m
+            # - per i lag (ell>=1), includo sempre mm=1,2,3
+            if (ell_id == 1 && mm > m) next
+            
+            F_qm <- switch(
+              mm,
+              `1` = F1[lag_q, ],
+              `2` = F2[lag_q, ],
+              `3` = F3[lag_q, ]
+            )
+            
+            start_col <- (mm - 1) * K + 1
+            end_col   <- mm * K
+            beta_block <- beta_mat[ell_id, start_col:end_col]
+            
+            contrib <- contrib + sum(F_qm * beta_block)
+          }
+        }
+        
+        # nowcast per il mese m del trimestre τ:
+        # β0 + parte AR (solo y) + parte fattori
+        y_nowcast[month_idx[m]] <- beta0 + AR_part_tau + contrib
+      }
     }
   }
   
@@ -370,7 +587,17 @@ MF_TPRF <- function(X_lf, X_hf, y_q, Lproxy = 1, L_midas = 1) {
     tau_curr   <- T_q + 1
     month_curr <- 3 * T_q + seq_len(rem)   # indici mesi disponibili del trimestre T_q+1
     
-    for (m in 1:rem) {   # m=1,2 (o 3) mesi osservati nel trimestre corrente
+    # -------- parte AR in y per il trimestre corrente --------
+    if (p_AR > 0) {
+      # y_{T_q+1-1}, ..., y_{T_q+1-p_AR} = y_{T_q}, y_{T_q-1}, ...
+      y_lags_curr <- sapply(1:p_AR, function(j) y_q[tau_curr - j])
+      AR_part_curr <- sum(rho_hat * y_lags_curr)
+    } else {
+      AR_part_curr <- 0
+    }
+    
+    # -------- parte fattoriale con F_next1/F_next2/F_next3 --------
+    for (m in 1:rem) {   # m = 1,2 (o 3) mesi osservati nel trimestre corrente
       
       contrib <- 0
       
@@ -413,9 +640,11 @@ MF_TPRF <- function(X_lf, X_hf, y_q, Lproxy = 1, L_midas = 1) {
         }
       }
       
-      y_nowcast[month_curr[m]] <- beta0 + contrib
+      # nowcast per il mese m del trimestre T_q+1
+      y_nowcast[month_curr[m]] <- beta0 + AR_part_curr + contrib
     }
   }
+  
   
   return(list(
     Z         = Z,

@@ -509,7 +509,6 @@ prepare_all_countries <- function(countries, params, path,
       sel_m     = vars_sel$m,
       sel_q     = vars_sel$q,
       path      = path,
-      covid_mask = covid_mask,
       covid_mask_m    = params$covid_mask_m,
       covid_mask_q    = params$covid_mask_q
     )
