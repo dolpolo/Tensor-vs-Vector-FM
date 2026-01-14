@@ -12,6 +12,7 @@ MF-TPRF/EA/results/
 
 # Ignora tutto sotto LaTeX/
 old/*
+literature/*
 
 # =========================
 # LaTeX: tieni SOLO main.pdf
