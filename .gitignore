@@ -6,6 +6,10 @@
 MF-TPRF/EA/data/
 MF-TPRF/EA/results/
 
+# Matrix MF-TPRF
+T-MF-TPRF/EA/data/
+T-MF-TPRF/EA/results/
+
 # =========================
 # old: ignore old files
 # =========================
